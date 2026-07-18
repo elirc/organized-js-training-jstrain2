@@ -1,0 +1,418 @@
+# Guide: src/lib/engine/executor.ts
+
+## Purpose
+This file is part of the workflow execution engine. It transforms workflow definitions into runtime behavior with retries, branching, and run logging.
+
+## Line-by-line walkthrough
+
+### Imports (what and why)
+- L1: `import { and, asc, count, eq } from "drizzle-orm";` imports from `drizzle-orm` so this module can use that dependency.
+- L2: `import { db } from "@/lib/db";` imports from `@/lib/db` so this module can use that dependency.
+- L3: `import { deadLetterItems, eventLog, stepLogs, tenants, workflowRuns, workflowSteps, workflows } from "@/lib/db/schema";` imports from `@/lib/db/schema` so this module can use that dependency.
+- L4: `import { RunContext } from "@/lib/engine/context";` imports from `@/lib/engine/context` so this module can use that dependency.
+- L5: `import { lookupIdempotencyRunId, reserveIdempotencyKey } from "@/lib/engine/idempotency";` imports from `@/lib/engine/idempotency` so this module can use that dependency.
+- L6: `import { getStepRunner } from "@/lib/engine/step-runners";` imports from `@/lib/engine/step-runners` so this module can use that dependency.
+- L7: `import type { StepOutput } from "@/lib/engine/step-runners/types";` imports from `@/lib/engine/step-runners/types` so this module can use that dependency.
+- L8: `import { redis } from "@/lib/queue/connection";` imports from `@/lib/queue/connection` so this module can use that dependency.
+- L9: `import { logger } from "@/lib/utils/logger";` imports from `@/lib/utils/logger` so this module can use that dependency.
+- L10: `import { computeBackoff, sleep } from "@/lib/utils/retry";` imports from `@/lib/utils/retry` so this module can use that dependency.
+- L11: `import { ConcurrencyLimitError, StepExecutionError } from "@/lib/utils/errors";` imports from `@/lib/utils/errors` so this module can use that dependency.
+
+### Functions and components
+- L28: **WorkflowExecutor** (exported class) - signature: `export class WorkflowExecutor {`.
+- L201: **preparedConfig** (arrow function) - signature: `const preparedConfig = (context.resolveTemplates(step.config) as Record<string, unknown>) ?? {};`.
+
+### Ordered walkthrough
+- L1: `import { and, asc, count, eq } from "drizzle-orm";` - Imports a dependency so this module can use external functionality.
+- L2: `import { db } from "@/lib/db";` - Imports a dependency so this module can use external functionality.
+- L3: `import { deadLetterItems, eventLog, stepLogs, tenants, workflowRuns, workflowSteps, workflows } from "@/lib/db/schema";` - Imports a dependency so this module can use external functionality.
+- L4: `import { RunContext } from "@/lib/engine/context";` - Imports a dependency so this module can use external functionality.
+- L5: `import { lookupIdempotencyRunId, reserveIdempotencyKey } from "@/lib/engine/idempotency";` - Imports a dependency so this module can use external functionality.
+- L6: `import { getStepRunner } from "@/lib/engine/step-runners";` - Imports a dependency so this module can use external functionality.
+- L7: `import type { StepOutput } from "@/lib/engine/step-runners/types";` - Imports a dependency so this module can use external functionality.
+- L8: `import { redis } from "@/lib/queue/connection";` - Imports a dependency so this module can use external functionality.
+- L9: `import { logger } from "@/lib/utils/logger";` - Imports a dependency so this module can use external functionality.
+- L10: `import { computeBackoff, sleep } from "@/lib/utils/retry";` - Imports a dependency so this module can use external functionality.
+- L11: `import { ConcurrencyLimitError, StepExecutionError } from "@/lib/utils/errors";` - Imports a dependency so this module can use external functionality.
+- L13: `export interface WorkflowExecutionJob {` - Defines a TypeScript interface contract that constrains object shape at compile time.
+- L14: `runId: string;` - Contributes to the local implementation details in this scope.
+- L15: `workflowId: string;` - Contributes to the local implementation details in this scope.
+- L16: `tenantId: string;` - Contributes to the local implementation details in this scope.
+- L17: `triggerData: Record<string, unknown>;` - Contributes to the local implementation details in this scope.
+- L18: `idempotencyKey?: string;` - Contributes to the local implementation details in this scope.
+- L19: `workflowVersion?: number;` - Contributes to the local implementation details in this scope.
+- L20: `}` - Contributes to the local implementation details in this scope.
+- L22: `interface RetryConfig {` - Defines a TypeScript interface contract that constrains object shape at compile time.
+- L23: `maxRetries: number;` - Contributes to the local implementation details in this scope.
+- L24: `backoffMs: number;` - Contributes to the local implementation details in this scope.
+- L25: `backoffMultiplier: number;` - Contributes to the local implementation details in this scope.
+- L26: `}` - Contributes to the local implementation details in this scope.
+- L28: `export class WorkflowExecutor {` - Defines a class that groups behavior and state under one abstraction.
+- L29: `async run(job: WorkflowExecutionJob): Promise<{ runId: string; status: string }> {` - Contributes to the local implementation details in this scope.
+- L30: `await this.claimConcurrency(job.tenantId);` - Contributes to the local implementation details in this scope.
+- L32: `const startedAt = Date.now();` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L33: `const context = new RunContext(job.triggerData);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L35: `try {` - Starts guarded execution for operations that may throw.
+- L36: `if (job.idempotencyKey) {` - Branches control flow so different code paths run under different conditions.
+- L37: `const existingRunId = await lookupIdempotencyRunId(job.idempotencyKey, job.tenantId);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L38: `if (existingRunId) {` - Branches control flow so different code paths run under different conditions.
+- L39: `logger.info({ tenantId: job.tenantId, runId: existingRunId }, "Skipping duplicate run by idempotency key");` - Contributes to the local implementation details in this scope.
+- L40: `return { runId: existingRunId, status: "completed" };` - Returns data/UI to the caller, ending the current function path.
+- L41: `}` - Contributes to the local implementation details in this scope.
+- L42: `}` - Contributes to the local implementation details in this scope.
+- L44: `const workflow = await db.query.workflows.findFirst({` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L45: `where: and(eq(workflows.id, job.workflowId), eq(workflows.tenantId, job.tenantId)),` - Contributes to the local implementation details in this scope.
+- L46: `});` - Contributes to the local implementation details in this scope.
+- L48: `if (!workflow) {` - Branches control flow so different code paths run under different conditions.
+- L49: `throw new Error("Workflow not found");` - Raises an error intentionally so callers can react to failure.
+- L50: `}` - Contributes to the local implementation details in this scope.
+- L52: `await db` - Contributes to the local implementation details in this scope.
+- L53: `.update(workflowRuns)` - Interacts with the database; this is a persistent side effect.
+- L54: `.set({ status: "running", startedAt: new Date(), workflowVersion: workflow.version })` - Contributes to the local implementation details in this scope.
+- L55: `.where(eq(workflowRuns.id, job.runId));` - Contributes to the local implementation details in this scope.
+- L57: `const steps = await db.query.workflowSteps.findMany({` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L58: `where: eq(workflowSteps.workflowId, job.workflowId),` - Contributes to the local implementation details in this scope.
+- L59: `orderBy: [asc(workflowSteps.position)],` - Contributes to the local implementation details in this scope.
+- L60: `});` - Contributes to the local implementation details in this scope.
+- L62: `const stepById = new Map(steps.map((step, index) => [step.id, { step, index }]));` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L64: `let cursor = 0;` - Declares mutable state inside this module scope.
+- L65: `while (cursor < steps.length) {` - Iterates over data to apply repeated behavior.
+- L66: `const currentStep = steps[cursor];` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L67: `const output = await this.executeStep(job, currentStep, context);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L69: `context.setStepOutput(currentStep.name, output.data);` - Contributes to the local implementation details in this scope.
+- L71: `await redis.publish(` - Registers runtime side effects/events that must be cleaned up or coordinated.
+- L72: `\`flowpilot:runs:${job.runId}\`,` - Contributes to the local implementation details in this scope.
+- L73: `JSON.stringify({` - Contributes to the local implementation details in this scope.
+- L74: `event: "step.completed",` - Contributes to the local implementation details in this scope.
+- L75: `runId: job.runId,` - Contributes to the local implementation details in this scope.
+- L76: `stepId: currentStep.id,` - Contributes to the local implementation details in this scope.
+- L77: `status: "completed",` - Contributes to the local implementation details in this scope.
+- L78: `output: output.data,` - Contributes to the local implementation details in this scope.
+- L79: `}),` - Contributes to the local implementation details in this scope.
+- L80: `);` - Contributes to the local implementation details in this scope.
+- L82: `if (currentStep.stepType === "condition") {` - Branches control flow so different code paths run under different conditions.
+- L83: `const branches = Array.isArray(currentStep.conditionBranches)` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L84: `? (currentStep.conditionBranches as Array<{ expression?: string; nextStepId?: string }>)` - Contributes to the local implementation details in this scope.
+- L85: `: [];` - Contributes to the local implementation details in this scope.
+- L86: `const matched = branches.find((branch) => Boolean(branch.expression) && output.data.passed);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L87: `if (matched?.nextStepId) {` - Branches control flow so different code paths run under different conditions.
+- L88: `const branchTarget = stepById.get(matched.nextStepId);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L89: `if (branchTarget) {` - Branches control flow so different code paths run under different conditions.
+- L90: `cursor = branchTarget.index;` - Contributes to the local implementation details in this scope.
+- L91: `continue;` - Contributes to the local implementation details in this scope.
+- L92: `}` - Contributes to the local implementation details in this scope.
+- L93: `}` - Contributes to the local implementation details in this scope.
+- L94: `}` - Contributes to the local implementation details in this scope.
+- L96: `if (currentStep.nextStepId) {` - Branches control flow so different code paths run under different conditions.
+- L97: `const explicitNext = stepById.get(currentStep.nextStepId);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L98: `if (explicitNext) {` - Branches control flow so different code paths run under different conditions.
+- L99: `cursor = explicitNext.index;` - Contributes to the local implementation details in this scope.
+- L100: `continue;` - Contributes to the local implementation details in this scope.
+- L101: `}` - Contributes to the local implementation details in this scope.
+- L102: `}` - Contributes to the local implementation details in this scope.
+- L104: `cursor += 1;` - Contributes to the local implementation details in this scope.
+- L105: `}` - Contributes to the local implementation details in this scope.
+- L107: `const durationMs = Date.now() - startedAt;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L109: `await db` - Contributes to the local implementation details in this scope.
+- L110: `.update(workflowRuns)` - Interacts with the database; this is a persistent side effect.
+- L111: `.set({` - Contributes to the local implementation details in this scope.
+- L112: `status: "completed",` - Contributes to the local implementation details in this scope.
+- L113: `completedAt: new Date(),` - Contributes to the local implementation details in this scope.
+- L114: `durationMs,` - Contributes to the local implementation details in this scope.
+- L115: `contextData: context.getState() as unknown as Record<string, unknown>,` - Contributes to the local implementation details in this scope.
+- L116: `})` - Contributes to the local implementation details in this scope.
+- L117: `.where(eq(workflowRuns.id, job.runId));` - Contributes to the local implementation details in this scope.
+- L119: `if (job.idempotencyKey) {` - Branches control flow so different code paths run under different conditions.
+- L120: `await reserveIdempotencyKey({` - Contributes to the local implementation details in this scope.
+- L121: `key: job.idempotencyKey,` - Contributes to the local implementation details in this scope.
+- L122: `tenantId: job.tenantId,` - Contributes to the local implementation details in this scope.
+- L123: `runId: job.runId,` - Contributes to the local implementation details in this scope.
+- L124: `});` - Contributes to the local implementation details in this scope.
+- L125: `}` - Contributes to the local implementation details in this scope.
+- L127: `await db.insert(eventLog).values({` - Interacts with the database; this is a persistent side effect.
+- L128: `tenantId: job.tenantId,` - Contributes to the local implementation details in this scope.
+- L129: `eventType: "run.completed",` - Contributes to the local implementation details in this scope.
+- L130: `entityType: "run",` - Contributes to the local implementation details in this scope.
+- L131: `entityId: job.runId,` - Contributes to the local implementation details in this scope.
+- L132: `payload: { durationMs },` - Contributes to the local implementation details in this scope.
+- L133: `});` - Contributes to the local implementation details in this scope.
+- L135: `await redis.publish(` - Registers runtime side effects/events that must be cleaned up or coordinated.
+- L136: `\`flowpilot:runs:${job.runId}\`,` - Contributes to the local implementation details in this scope.
+- L137: `JSON.stringify({` - Contributes to the local implementation details in this scope.
+- L138: `event: "run.completed",` - Contributes to the local implementation details in this scope.
+- L139: `runId: job.runId,` - Contributes to the local implementation details in this scope.
+- L140: `status: "completed",` - Contributes to the local implementation details in this scope.
+- L141: `durationMs,` - Contributes to the local implementation details in this scope.
+- L142: `}),` - Contributes to the local implementation details in this scope.
+- L143: `);` - Contributes to the local implementation details in this scope.
+- L145: `return { runId: job.runId, status: "completed" };` - Returns data/UI to the caller, ending the current function path.
+- L146: `} catch (error: unknown) {` - Contributes to the local implementation details in this scope.
+- L147: `const message = error instanceof Error ? error.message : "Workflow run failed";` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L149: `await db` - Contributes to the local implementation details in this scope.
+- L150: `.update(workflowRuns)` - Interacts with the database; this is a persistent side effect.
+- L151: `.set({` - Contributes to the local implementation details in this scope.
+- L152: `status: "failed",` - Contributes to the local implementation details in this scope.
+- L153: `error: message,` - Contributes to the local implementation details in this scope.
+- L154: `completedAt: new Date(),` - Contributes to the local implementation details in this scope.
+- L155: `durationMs: Date.now() - startedAt,` - Contributes to the local implementation details in this scope.
+- L156: `contextData: context.getState() as unknown as Record<string, unknown>,` - Contributes to the local implementation details in this scope.
+- L157: `})` - Contributes to the local implementation details in this scope.
+- L158: `.where(eq(workflowRuns.id, job.runId));` - Contributes to the local implementation details in this scope.
+- L160: `await db.insert(eventLog).values({` - Interacts with the database; this is a persistent side effect.
+- L161: `tenantId: job.tenantId,` - Contributes to the local implementation details in this scope.
+- L162: `eventType: "run.failed",` - Contributes to the local implementation details in this scope.
+- L163: `entityType: "run",` - Contributes to the local implementation details in this scope.
+- L164: `entityId: job.runId,` - Contributes to the local implementation details in this scope.
+- L165: `payload: {` - Contributes to the local implementation details in this scope.
+- L166: `error: message,` - Contributes to the local implementation details in this scope.
+- L167: `},` - Contributes to the local implementation details in this scope.
+- L168: `});` - Contributes to the local implementation details in this scope.
+- L170: `await db.insert(deadLetterItems).values({` - Interacts with the database; this is a persistent side effect.
+- L171: `runId: job.runId,` - Contributes to the local implementation details in this scope.
+- L172: `queueName: "workflow-execution",` - Contributes to the local implementation details in this scope.
+- L173: `jobData: job as unknown as Record<string, unknown>,` - Contributes to the local implementation details in this scope.
+- L174: `error: message,` - Contributes to the local implementation details in this scope.
+- L175: `failureCount: 1,` - Contributes to the local implementation details in this scope.
+- L176: `});` - Contributes to the local implementation details in this scope.
+- L178: `await redis.publish(` - Registers runtime side effects/events that must be cleaned up or coordinated.
+- L179: `\`flowpilot:runs:${job.runId}\`,` - Contributes to the local implementation details in this scope.
+- L180: `JSON.stringify({` - Contributes to the local implementation details in this scope.
+- L181: `event: "run.failed",` - Contributes to the local implementation details in this scope.
+- L182: `runId: job.runId,` - Contributes to the local implementation details in this scope.
+- L183: `status: "failed",` - Contributes to the local implementation details in this scope.
+- L184: `error: message,` - Contributes to the local implementation details in this scope.
+- L185: `}),` - Contributes to the local implementation details in this scope.
+- L186: `);` - Contributes to the local implementation details in this scope.
+- L188: `throw error;` - Contributes to the local implementation details in this scope.
+- L189: `} finally {` - Contributes to the local implementation details in this scope.
+- L190: `await this.releaseConcurrency(job.tenantId);` - Contributes to the local implementation details in this scope.
+- L191: `}` - Contributes to the local implementation details in this scope.
+- L192: `}` - Contributes to the local implementation details in this scope.
+- L194: `private async executeStep(` - Contributes to the local implementation details in this scope.
+- L195: `job: WorkflowExecutionJob,` - Contributes to the local implementation details in this scope.
+- L196: `step: typeof workflowSteps.$inferSelect,` - Contributes to the local implementation details in this scope.
+- L197: `context: RunContext,` - Contributes to the local implementation details in this scope.
+- L198: `): Promise<StepOutput> {` - Contributes to the local implementation details in this scope.
+- L199: `const retryConfig = this.parseRetryConfig(step.retryConfig);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L200: `const runner = getStepRunner(step.stepType);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L201: `const preparedConfig = (context.resolveTemplates(step.config) as Record<string, unknown>) ?? {};` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L202: `const inputData =` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L203: `(context.resolveTemplates(step.inputMapping) as Record<string, unknown>) ?? {` - Contributes to the local implementation details in this scope.
+- L204: `triggerData: job.triggerData,` - Contributes to the local implementation details in this scope.
+- L205: `steps: context.getState().steps,` - Contributes to the local implementation details in this scope.
+- L206: `};` - Contributes to the local implementation details in this scope.
+- L208: `for (let attempt = 1; attempt <= retryConfig.maxRetries + 1; attempt += 1) {` - Iterates over data to apply repeated behavior.
+- L209: `const startedAt = Date.now();` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L210: `const [stepLog] = await db` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L211: `.insert(stepLogs)` - Interacts with the database; this is a persistent side effect.
+- L212: `.values({` - Contributes to the local implementation details in this scope.
+- L213: `runId: job.runId,` - Contributes to the local implementation details in this scope.
+- L214: `stepId: step.id,` - Contributes to the local implementation details in this scope.
+- L215: `stepName: step.name,` - Contributes to the local implementation details in this scope.
+- L216: `stepType: step.stepType,` - Contributes to the local implementation details in this scope.
+- L217: `status: "running",` - Contributes to the local implementation details in this scope.
+- L218: `attempt,` - Contributes to the local implementation details in this scope.
+- L219: `inputData,` - Contributes to the local implementation details in this scope.
+- L220: `startedAt: new Date(),` - Contributes to the local implementation details in this scope.
+- L221: `})` - Contributes to the local implementation details in this scope.
+- L222: `.returning({ id: stepLogs.id });` - Contributes to the local implementation details in this scope.
+- L224: `try {` - Starts guarded execution for operations that may throw.
+- L225: `await redis.publish(` - Registers runtime side effects/events that must be cleaned up or coordinated.
+- L226: `\`flowpilot:runs:${job.runId}\`,` - Contributes to the local implementation details in this scope.
+- L227: `JSON.stringify({ event: "step.started", runId: job.runId, stepId: step.id, attempt }),` - Contributes to the local implementation details in this scope.
+- L228: `);` - Contributes to the local implementation details in this scope.
+- L230: `const output = await runner.execute(` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L231: `{` - Contributes to the local implementation details in this scope.
+- L232: `data: {` - Contributes to the local implementation details in this scope.
+- L233: `...inputData,` - Contributes to the local implementation details in this scope.
+- L234: `triggerData: context.getState().triggerData,` - Contributes to the local implementation details in this scope.
+- L235: `steps: context.getState().steps,` - Contributes to the local implementation details in this scope.
+- L236: `},` - Contributes to the local implementation details in this scope.
+- L237: `metadata: { runId: job.runId, stepId: step.id, attempt },` - Contributes to the local implementation details in this scope.
+- L238: `},` - Contributes to the local implementation details in this scope.
+- L239: `preparedConfig,` - Contributes to the local implementation details in this scope.
+- L240: `context,` - Contributes to the local implementation details in this scope.
+- L241: `);` - Contributes to the local implementation details in this scope.
+- L243: `await db` - Contributes to the local implementation details in this scope.
+- L244: `.update(stepLogs)` - Interacts with the database; this is a persistent side effect.
+- L245: `.set({` - Contributes to the local implementation details in this scope.
+- L246: `status: "completed",` - Contributes to the local implementation details in this scope.
+- L247: `outputData: output.data,` - Contributes to the local implementation details in this scope.
+- L248: `completedAt: new Date(),` - Contributes to the local implementation details in this scope.
+- L249: `durationMs: Date.now() - startedAt,` - Contributes to the local implementation details in this scope.
+- L250: `})` - Contributes to the local implementation details in this scope.
+- L251: `.where(eq(stepLogs.id, stepLog.id));` - Contributes to the local implementation details in this scope.
+- L253: `return output;` - Returns data/UI to the caller, ending the current function path.
+- L254: `} catch (error: unknown) {` - Contributes to the local implementation details in this scope.
+- L255: `const message = error instanceof Error ? error.message : "Step failed";` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L256: `const code = error instanceof StepExecutionError ? error.code : "STEP_EXECUTION_ERROR";` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L258: `const hasRetry = attempt <= retryConfig.maxRetries;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L259: `await db` - Contributes to the local implementation details in this scope.
+- L260: `.update(stepLogs)` - Interacts with the database; this is a persistent side effect.
+- L261: `.set({` - Contributes to the local implementation details in this scope.
+- L262: `status: hasRetry ? "retrying" : "failed",` - Contributes to the local implementation details in this scope.
+- L263: `error: message,` - Contributes to the local implementation details in this scope.
+- L264: `errorCode: code,` - Contributes to the local implementation details in this scope.
+- L265: `completedAt: new Date(),` - Contributes to the local implementation details in this scope.
+- L266: `durationMs: Date.now() - startedAt,` - Contributes to the local implementation details in this scope.
+- L267: `})` - Contributes to the local implementation details in this scope.
+- L268: `.where(eq(stepLogs.id, stepLog.id));` - Contributes to the local implementation details in this scope.
+- L270: `await redis.publish(` - Registers runtime side effects/events that must be cleaned up or coordinated.
+- L271: `\`flowpilot:runs:${job.runId}\`,` - Contributes to the local implementation details in this scope.
+- L272: `JSON.stringify({` - Contributes to the local implementation details in this scope.
+- L273: `event: hasRetry ? "step.retrying" : "step.failed",` - Contributes to the local implementation details in this scope.
+- L274: `runId: job.runId,` - Contributes to the local implementation details in this scope.
+- L275: `stepId: step.id,` - Contributes to the local implementation details in this scope.
+- L276: `attempt,` - Contributes to the local implementation details in this scope.
+- L277: `error: message,` - Contributes to the local implementation details in this scope.
+- L278: `}),` - Contributes to the local implementation details in this scope.
+- L279: `);` - Contributes to the local implementation details in this scope.
+- L281: `if (hasRetry) {` - Branches control flow so different code paths run under different conditions.
+- L282: `await sleep(computeBackoff(attempt, retryConfig));` - Contributes to the local implementation details in this scope.
+- L283: `continue;` - Contributes to the local implementation details in this scope.
+- L284: `}` - Contributes to the local implementation details in this scope.
+- L286: `if (step.onFailure === "continue") {` - Branches control flow so different code paths run under different conditions.
+- L287: `return {` - Returns data/UI to the caller, ending the current function path.
+- L288: `data: {` - Contributes to the local implementation details in this scope.
+- L289: `skipped: true,` - Contributes to the local implementation details in this scope.
+- L290: `error: message,` - Contributes to the local implementation details in this scope.
+- L291: `},` - Contributes to the local implementation details in this scope.
+- L292: `};` - Contributes to the local implementation details in this scope.
+- L293: `}` - Contributes to the local implementation details in this scope.
+- L295: `if (step.onFailure.startsWith("goto:")) {` - Branches control flow so different code paths run under different conditions.
+- L296: `return {` - Returns data/UI to the caller, ending the current function path.
+- L297: `data: {` - Contributes to the local implementation details in this scope.
+- L298: `skipped: true,` - Contributes to the local implementation details in this scope.
+- L299: `error: message,` - Contributes to the local implementation details in this scope.
+- L300: `},` - Contributes to the local implementation details in this scope.
+- L301: `metadata: {` - Contributes to the local implementation details in this scope.
+- L302: `goto: step.onFailure.slice(5),` - Contributes to the local implementation details in this scope.
+- L303: `},` - Contributes to the local implementation details in this scope.
+- L304: `};` - Contributes to the local implementation details in this scope.
+- L305: `}` - Contributes to the local implementation details in this scope.
+- L307: `throw new StepExecutionError(message, code);` - Raises an error intentionally so callers can react to failure.
+- L308: `}` - Contributes to the local implementation details in this scope.
+- L309: `}` - Contributes to the local implementation details in this scope.
+- L311: `throw new StepExecutionError("Step execution exhausted retries", "STEP_RETRY_EXHAUSTED");` - Raises an error intentionally so callers can react to failure.
+- L312: `}` - Contributes to the local implementation details in this scope.
+- L314: `private parseRetryConfig(config: Record<string, unknown>): RetryConfig {` - Contributes to the local implementation details in this scope.
+- L315: `const maxRetries = typeof config.maxRetries === "number" ? config.maxRetries : 3;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L316: `const backoffMs = typeof config.backoffMs === "number" ? config.backoffMs : 1000;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L317: `const backoffMultiplier = typeof config.backoffMultiplier === "number" ? config.backoffMultiplier : 2;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L319: `return {` - Returns data/UI to the caller, ending the current function path.
+- L320: `maxRetries,` - Contributes to the local implementation details in this scope.
+- L321: `backoffMs,` - Contributes to the local implementation details in this scope.
+- L322: `backoffMultiplier,` - Contributes to the local implementation details in this scope.
+- L323: `};` - Contributes to the local implementation details in this scope.
+- L324: `}` - Contributes to the local implementation details in this scope.
+- L326: `private async claimConcurrency(tenantId: string): Promise<void> {` - Contributes to the local implementation details in this scope.
+- L327: `const lockKey = \`flowpilot:tenant-lock:${tenantId}\`;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L328: `const lock = await redis.set(lockKey, "1", "PX", 5000, "NX");` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L330: `if (!lock) {` - Branches control flow so different code paths run under different conditions.
+- L331: `throw new ConcurrencyLimitError("Tenant lock already held");` - Raises an error intentionally so callers can react to failure.
+- L332: `}` - Contributes to the local implementation details in this scope.
+- L334: `const [tenant] = await db` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L335: `.select({ maxConcurrency: tenants.maxConcurrency })` - Interacts with the database; this is a persistent side effect.
+- L336: `.from(tenants)` - Contributes to the local implementation details in this scope.
+- L337: `.where(eq(tenants.id, tenantId))` - Contributes to the local implementation details in this scope.
+- L338: `.limit(1);` - Contributes to the local implementation details in this scope.
+- L340: `if (!tenant) {` - Branches control flow so different code paths run under different conditions.
+- L341: `throw new Error("Tenant not found");` - Raises an error intentionally so callers can react to failure.
+- L342: `}` - Contributes to the local implementation details in this scope.
+- L344: `const [running] = await db` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L345: `.select({ count: count() })` - Interacts with the database; this is a persistent side effect.
+- L346: `.from(workflowRuns)` - Contributes to the local implementation details in this scope.
+- L347: `.where(and(eq(workflowRuns.tenantId, tenantId), eq(workflowRuns.status, "running")));` - Contributes to the local implementation details in this scope.
+- L349: `if (running.count >= tenant.maxConcurrency) {` - Branches control flow so different code paths run under different conditions.
+- L350: `await redis.del(lockKey);` - Contributes to the local implementation details in this scope.
+- L351: `throw new ConcurrencyLimitError();` - Raises an error intentionally so callers can react to failure.
+- L352: `}` - Contributes to the local implementation details in this scope.
+- L353: `}` - Contributes to the local implementation details in this scope.
+- L355: `private async releaseConcurrency(tenantId: string): Promise<void> {` - Contributes to the local implementation details in this scope.
+- L356: `await redis.del(\`flowpilot:tenant-lock:${tenantId}\`);` - Contributes to the local implementation details in this scope.
+- L357: `}` - Contributes to the local implementation details in this scope.
+- L358: `}` - Contributes to the local implementation details in this scope.
+
+### State management
+- L54: `.set({ status: "running", startedAt: new Date(), workflowVersion: workflow.version })` affects state ownership or updates.
+- L62: `const stepById = new Map(steps.map((step, index) => [step.id, { step, index }]));` affects state ownership or updates.
+- L69: `context.setStepOutput(currentStep.name, output.data);` affects state ownership or updates.
+- L111: `.set({` affects state ownership or updates.
+- L151: `.set({` affects state ownership or updates.
+- L245: `.set({` affects state ownership or updates.
+- L261: `.set({` affects state ownership or updates.
+- L328: `const lock = await redis.set(lockKey, "1", "PX", 5000, "NX");` affects state ownership or updates.
+
+### Scope and closures
+- L32: Module/function-scoped constant provides stable reference.
+- L33: Module/function-scoped constant provides stable reference.
+- L37: Module/function-scoped constant provides stable reference.
+- L44: Module/function-scoped constant provides stable reference.
+- L57: Module/function-scoped constant provides stable reference.
+- L62: Callback closure captures variables from outer scope.
+- L66: Module/function-scoped constant provides stable reference.
+- L67: Module/function-scoped constant provides stable reference.
+
+### Control flow
+- L35: Protected block for expected fallible operations.
+- L36: Conditional branch chooses behavior based on runtime input.
+- L38: Conditional branch chooses behavior based on runtime input.
+- L48: Conditional branch chooses behavior based on runtime input.
+- L65: Loop processes repeated data/work.
+- L82: Conditional branch chooses behavior based on runtime input.
+- L87: Conditional branch chooses behavior based on runtime input.
+- L89: Conditional branch chooses behavior based on runtime input.
+- L96: Conditional branch chooses behavior based on runtime input.
+- L98: Conditional branch chooses behavior based on runtime input.
+
+### Side effects
+- L44: Database IO side effect.
+- L57: Database IO side effect.
+- L71: Messaging side effect.
+- L127: Database IO side effect.
+- L135: Messaging side effect.
+- L160: Database IO side effect.
+- L170: Database IO side effect.
+- L178: Messaging side effect.
+- L225: Messaging side effect.
+- L270: Messaging side effect.
+
+### TypeScript types and contracts
+- L13: Interface defines structural contract.
+- L17: Generic type parameter constrains data shape.
+- L22: Interface defines structural contract.
+- L29: Promise return type signals async contract.
+- L84: Generic type parameter constrains data shape.
+- L115: Generic type parameter constrains data shape.
+- L156: Generic type parameter constrains data shape.
+- L173: Generic type parameter constrains data shape.
+- L198: Promise return type signals async contract.
+- L201: Generic type parameter constrains data shape.
+
+## Concepts taught by this file
+- database modeling with ORM
+- background job processing
+- error handling strategy
+- idempotency
+- TypeScript type contracts
+- async/await control flow
+- configuration as code
+
+## Common mistakes
+- Mixing step-level and run-level failures, which breaks retry behavior.
+- Mutating shared context in unsafe ways across async boundaries.
+- Skipping log writes, making run debugging much harder.
+
+## Mini exercises
+- Add a new step runner behavior (for example, custom timeout handling) and thread it through executor logic.
+- Add one extra structured log field and verify it appears in run traces.
+- Modify retry behavior to cap maximum delay and explain tradeoffs.
+
+## Further reading
+- database modeling with ORM: search for "Drizzle ORM schema and relations"
+- background job processing: search for "background workers and job queues Node.js"
+- error handling strategy: search for "error handling best practices TypeScript backend"
+- idempotency: search for "API idempotency keys explained"
+- TypeScript type contracts: search for "TypeScript interfaces vs types"
+- async/await control flow: search for "JavaScript async await error handling"
+- configuration as code: search for "Twelve-Factor App config"

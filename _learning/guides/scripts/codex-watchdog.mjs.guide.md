@@ -1,0 +1,315 @@
+# Guide: scripts/codex-watchdog.mjs
+
+## Purpose
+This script automates an operational task for developers and local tooling reliability.
+
+## Line-by-line walkthrough
+
+### Imports (what and why)
+- L3: `import fs from "node:fs";` imports from `node:fs` so this module can use that dependency.
+- L4: `import fsp from "node:fs/promises";` imports from `node:fs/promises` so this module can use that dependency.
+- L5: `import os from "node:os";` imports from `node:os` so this module can use that dependency.
+- L6: `import path from "node:path";` imports from `node:path` so this module can use that dependency.
+- L7: `import { spawn } from "node:child_process";` imports from `node:child_process` so this module can use that dependency.
+
+### Functions and components
+- L13: **AUTO_RESTART** (arrow function) - signature: `const AUTO_RESTART = (process.env.WATCHDOG_AUTO_RESTART ?? "true").toLowerCase() === "true";`.
+- L25: **ensureDir** (async function) - signature: `async function ensureDir() {`.
+- L29: **nowIso** (function) - signature: `function nowIso() {`.
+- L33: **log** (async function) - signature: `async function log(message) {`.
+- L39: **readState** (async function) - signature: `async function readState() {`.
+- L54: **writeState** (async function) - signature: `async function writeState(state) {`.
+- L58: **findLatestSessionFile** (async function) - signature: `async function findLatestSessionFile(rootDir) {`.
+- L111: **readLastLines** (async function) - signature: `async function readLastLines(filePath, maxBytes = 400_000) {`.
+- L126: **extractStepSummary** (function) - signature: `function extractStepSummary(lines) {`.
+- L165: **createRestartPrompt** (async function) - signature: `async function createRestartPrompt(sessionFile, mtimeMs) {`.
+- L186: **triggerRestart** (async function) - signature: `async function triggerRestart(promptText) {`.
+- L211: **checkOnce** (async function) - signature: `async function checkOnce() {`.
+- L257: **main** (async function) - signature: `async function main() {`.
+
+### Ordered walkthrough
+- L1: `#!/usr/bin/env node` - Contributes to the local implementation details in this scope.
+- L3: `import fs from "node:fs";` - Imports a dependency so this module can use external functionality.
+- L4: `import fsp from "node:fs/promises";` - Imports a dependency so this module can use external functionality.
+- L5: `import os from "node:os";` - Imports a dependency so this module can use external functionality.
+- L6: `import path from "node:path";` - Imports a dependency so this module can use external functionality.
+- L7: `import { spawn } from "node:child_process";` - Imports a dependency so this module can use external functionality.
+- L9: `const CHECK_INTERVAL_MS = Number.parseInt(process.env.WATCHDOG_CHECK_MS ?? "300000", 10);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L10: `const STUCK_AFTER_MS = Number.parseInt(process.env.WATCHDOG_STUCK_MS ?? "900000", 10);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L11: `const MIN_STALE_CHECKS = Number.parseInt(process.env.WATCHDOG_STALE_CHECKS ?? "2", 10);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L12: `const RESTART_COOLDOWN_MS = Number.parseInt(process.env.WATCHDOG_RESTART_COOLDOWN_MS ?? "1800000", 10);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L13: `const AUTO_RESTART = (process.env.WATCHDOG_AUTO_RESTART ?? "true").toLowerCase() === "true";` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L14: `const MAX_STEP_LINES = Number.parseInt(process.env.WATCHDOG_STEP_LINES ?? "12", 10);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L16: `const workspace = process.env.CODEX_WATCHDOG_WORKSPACE ?? process.cwd();` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L17: `const sessionRoot =` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L18: `process.env.CODEX_SESSIONS_DIR ?? path.join(os.homedir(), ".codex", "sessions");` - Contributes to the local implementation details in this scope.
+- L20: `const watchdogDir = path.join(workspace, ".watchdog");` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L21: `const statePath = path.join(watchdogDir, "watchdog-state.json");` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L22: `const promptPath = path.join(watchdogDir, "restart-from-last-steps.txt");` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L23: `const logPath = path.join(watchdogDir, "watchdog.log");` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L25: `async function ensureDir() {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L26: `await fsp.mkdir(watchdogDir, { recursive: true });` - Contributes to the local implementation details in this scope.
+- L27: `}` - Contributes to the local implementation details in this scope.
+- L29: `function nowIso() {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L30: `return new Date().toISOString();` - Returns data/UI to the caller, ending the current function path.
+- L31: `}` - Contributes to the local implementation details in this scope.
+- L33: `async function log(message) {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L34: `const line = \`[${nowIso()}] ${message}\n\`;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L35: `await fsp.appendFile(logPath, line, "utf8");` - Contributes to the local implementation details in this scope.
+- L36: `process.stdout.write(line);` - Contributes to the local implementation details in this scope.
+- L37: `}` - Contributes to the local implementation details in this scope.
+- L39: `async function readState() {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L40: `try {` - Starts guarded execution for operations that may throw.
+- L41: `const raw = await fsp.readFile(statePath, "utf8");` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L42: `return JSON.parse(raw);` - Returns data/UI to the caller, ending the current function path.
+- L43: `} catch {` - Contributes to the local implementation details in this scope.
+- L44: `return {` - Returns data/UI to the caller, ending the current function path.
+- L45: `staleChecks: 0,` - Contributes to the local implementation details in this scope.
+- L46: `lastRestartAt: 0,` - Contributes to the local implementation details in this scope.
+- L47: `lastSessionPath: "",` - Contributes to the local implementation details in this scope.
+- L48: `lastMtimeMs: 0,` - Contributes to the local implementation details in this scope.
+- L49: `lastSize: 0,` - Contributes to the local implementation details in this scope.
+- L50: `};` - Contributes to the local implementation details in this scope.
+- L51: `}` - Contributes to the local implementation details in this scope.
+- L52: `}` - Contributes to the local implementation details in this scope.
+- L54: `async function writeState(state) {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L55: `await fsp.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");` - Contributes to the local implementation details in this scope.
+- L56: `}` - Contributes to the local implementation details in this scope.
+- L58: `async function findLatestSessionFile(rootDir) {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L59: `if (!fs.existsSync(rootDir)) {` - Branches control flow so different code paths run under different conditions.
+- L60: `return null;` - Returns data/UI to the caller, ending the current function path.
+- L61: `}` - Contributes to the local implementation details in this scope.
+- L63: `const stack = [rootDir];` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L64: `let latest = null;` - Declares mutable state inside this module scope.
+- L66: `while (stack.length > 0) {` - Iterates over data to apply repeated behavior.
+- L67: `const current = stack.pop();` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L68: `if (!current) {` - Branches control flow so different code paths run under different conditions.
+- L69: `continue;` - Contributes to the local implementation details in this scope.
+- L70: `}` - Contributes to the local implementation details in this scope.
+- L72: `let entries = [];` - Declares mutable state inside this module scope.
+- L73: `try {` - Starts guarded execution for operations that may throw.
+- L74: `entries = await fsp.readdir(current, { withFileTypes: true });` - Contributes to the local implementation details in this scope.
+- L75: `} catch {` - Contributes to the local implementation details in this scope.
+- L76: `continue;` - Contributes to the local implementation details in this scope.
+- L77: `}` - Contributes to the local implementation details in this scope.
+- L79: `for (const entry of entries) {` - Iterates over data to apply repeated behavior.
+- L80: `const fullPath = path.join(current, entry.name);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L82: `if (entry.isDirectory()) {` - Branches control flow so different code paths run under different conditions.
+- L83: `stack.push(fullPath);` - Contributes to the local implementation details in this scope.
+- L84: `continue;` - Contributes to the local implementation details in this scope.
+- L85: `}` - Contributes to the local implementation details in this scope.
+- L87: `if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {` - Branches control flow so different code paths run under different conditions.
+- L88: `continue;` - Contributes to the local implementation details in this scope.
+- L89: `}` - Contributes to the local implementation details in this scope.
+- L91: `let stats;` - Declares mutable state inside this module scope.
+- L92: `try {` - Starts guarded execution for operations that may throw.
+- L93: `stats = await fsp.stat(fullPath);` - Contributes to the local implementation details in this scope.
+- L94: `} catch {` - Contributes to the local implementation details in this scope.
+- L95: `continue;` - Contributes to the local implementation details in this scope.
+- L96: `}` - Contributes to the local implementation details in this scope.
+- L98: `if (!latest || stats.mtimeMs > latest.mtimeMs) {` - Branches control flow so different code paths run under different conditions.
+- L99: `latest = {` - Contributes to the local implementation details in this scope.
+- L100: `path: fullPath,` - Contributes to the local implementation details in this scope.
+- L101: `mtimeMs: stats.mtimeMs,` - Contributes to the local implementation details in this scope.
+- L102: `size: stats.size,` - Contributes to the local implementation details in this scope.
+- L103: `};` - Contributes to the local implementation details in this scope.
+- L104: `}` - Contributes to the local implementation details in this scope.
+- L105: `}` - Contributes to the local implementation details in this scope.
+- L106: `}` - Contributes to the local implementation details in this scope.
+- L108: `return latest;` - Returns data/UI to the caller, ending the current function path.
+- L109: `}` - Contributes to the local implementation details in this scope.
+- L111: `async function readLastLines(filePath, maxBytes = 400_000) {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L112: `const stats = await fsp.stat(filePath);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L113: `const start = Math.max(0, stats.size - maxBytes);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L114: `const length = stats.size - start;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L115: `const handle = await fsp.open(filePath, "r");` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L117: `try {` - Starts guarded execution for operations that may throw.
+- L118: `const buffer = Buffer.alloc(length);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L119: `await handle.read(buffer, 0, length, start);` - Contributes to the local implementation details in this scope.
+- L120: `return buffer.toString("utf8").split(/\r?\n/).filter(Boolean);` - Returns data/UI to the caller, ending the current function path.
+- L121: `} finally {` - Contributes to the local implementation details in this scope.
+- L122: `await handle.close();` - Contributes to the local implementation details in this scope.
+- L123: `}` - Contributes to the local implementation details in this scope.
+- L124: `}` - Contributes to the local implementation details in this scope.
+- L126: `function extractStepSummary(lines) {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L127: `const steps = [];` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L129: `for (const line of lines) {` - Iterates over data to apply repeated behavior.
+- L130: `try {` - Starts guarded execution for operations that may throw.
+- L131: `const parsed = JSON.parse(line);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L132: `const payload = parsed?.payload ?? {};` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L134: `if (parsed?.type === "event_msg" && payload?.type === "agent_reasoning" && payload?.text) {` - Branches control flow so different code paths run under different conditions.
+- L135: `steps.push(\`reasoning: ${String(payload.text)}\`);` - Contributes to the local implementation details in this scope.
+- L136: `continue;` - Contributes to the local implementation details in this scope.
+- L137: `}` - Contributes to the local implementation details in this scope.
+- L139: `if (parsed?.type === "response_item" && payload?.type === "function_call" && payload?.name) {` - Branches control flow so different code paths run under different conditions.
+- L140: `steps.push(\`tool_call: ${String(payload.name)}\`);` - Contributes to the local implementation details in this scope.
+- L141: `continue;` - Contributes to the local implementation details in this scope.
+- L142: `}` - Contributes to the local implementation details in this scope.
+- L144: `if (parsed?.type === "response_item" && payload?.type === "message") {` - Branches control flow so different code paths run under different conditions.
+- L145: `steps.push("assistant_message");` - Contributes to the local implementation details in this scope.
+- L146: `}` - Contributes to the local implementation details in this scope.
+- L147: `} catch {` - Contributes to the local implementation details in this scope.
+- L148: `// Ignore malformed lines` - Comment describing intent or constraints for future maintainers.
+- L149: `}` - Contributes to the local implementation details in this scope.
+- L150: `}` - Contributes to the local implementation details in this scope.
+- L152: `const deduped = [];` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L153: `for (const step of steps.reverse()) {` - Iterates over data to apply repeated behavior.
+- L154: `if (!deduped.includes(step)) {` - Branches control flow so different code paths run under different conditions.
+- L155: `deduped.push(step);` - Contributes to the local implementation details in this scope.
+- L156: `}` - Contributes to the local implementation details in this scope.
+- L157: `if (deduped.length >= MAX_STEP_LINES) {` - Branches control flow so different code paths run under different conditions.
+- L158: `break;` - Contributes to the local implementation details in this scope.
+- L159: `}` - Contributes to the local implementation details in this scope.
+- L160: `}` - Contributes to the local implementation details in this scope.
+- L162: `return deduped.reverse();` - Returns data/UI to the caller, ending the current function path.
+- L163: `}` - Contributes to the local implementation details in this scope.
+- L165: `async function createRestartPrompt(sessionFile, mtimeMs) {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L166: `const lines = await readLastLines(sessionFile);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L167: `const summary = extractStepSummary(lines);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L169: `const content = [` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L170: `"Codex appears stuck. Restart from the latest steps and continue.",` - Contributes to the local implementation details in this scope.
+- L171: `\`Workspace: ${workspace}\`,` - Contributes to the local implementation details in this scope.
+- L172: `\`Session file: ${sessionFile}\`,` - Contributes to the local implementation details in this scope.
+- L173: `\`Last activity: ${new Date(mtimeMs).toISOString()}\`,` - Contributes to the local implementation details in this scope.
+- L174: `"",` - Contributes to the local implementation details in this scope.
+- L175: `"Recent steps:",` - Contributes to the local implementation details in this scope.
+- L176: `...(summary.length > 0 ? summary.map((line) => \`- ${line}\`) : ["- (no steps extracted)"]),` - Contributes to the local implementation details in this scope.
+- L177: `"",` - Contributes to the local implementation details in this scope.
+- L178: `"Instruction:",` - Contributes to the local implementation details in this scope.
+- L179: `"Resume work from these last steps, avoid repeating completed work, and continue toward completion.",` - Contributes to the local implementation details in this scope.
+- L180: `].join("\n");` - Contributes to the local implementation details in this scope.
+- L182: `await fsp.writeFile(promptPath, content, "utf8");` - Contributes to the local implementation details in this scope.
+- L183: `return content;` - Returns data/UI to the caller, ending the current function path.
+- L184: `}` - Contributes to the local implementation details in this scope.
+- L186: `async function triggerRestart(promptText) {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L187: `if (!AUTO_RESTART) {` - Branches control flow so different code paths run under different conditions.
+- L188: `await log(\`Detected stuck state. Prompt written to ${promptPath} (auto restart disabled).\`);` - Contributes to the local implementation details in this scope.
+- L189: `return;` - Contributes to the local implementation details in this scope.
+- L190: `}` - Contributes to the local implementation details in this scope.
+- L192: `const compactPrompt = [` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L193: `"Watchdog detected Codex inactivity.",` - Contributes to the local implementation details in this scope.
+- L194: `\`Read and follow restart context from: ${promptPath}\`,` - Contributes to the local implementation details in this scope.
+- L195: `"Resume from last steps and continue the task.",` - Contributes to the local implementation details in this scope.
+- L196: `].join(" ");` - Contributes to the local implementation details in this scope.
+- L198: `const child = spawn(` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L199: `"codex",` - Contributes to the local implementation details in this scope.
+- L200: `["exec", "--cd", workspace, compactPrompt],` - Contributes to the local implementation details in this scope.
+- L201: `{` - Contributes to the local implementation details in this scope.
+- L202: `detached: true,` - Contributes to the local implementation details in this scope.
+- L203: `stdio: "ignore",` - Contributes to the local implementation details in this scope.
+- L204: `},` - Contributes to the local implementation details in this scope.
+- L205: `);` - Contributes to the local implementation details in this scope.
+- L207: `child.unref();` - Contributes to the local implementation details in this scope.
+- L208: `await log(\`Detected stuck state. Restart command sent via 'codex exec'. Prompt snapshot saved (${promptText.length} chars).\`);` - Contributes to the local implementation details in this scope.
+- L209: `}` - Contributes to the local implementation details in this scope.
+- L211: `async function checkOnce() {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L212: `await ensureDir();` - Contributes to the local implementation details in this scope.
+- L214: `const state = await readState();` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L215: `const latest = await findLatestSessionFile(sessionRoot);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L217: `if (!latest) {` - Branches control flow so different code paths run under different conditions.
+- L218: `await log(\`No session file found under ${sessionRoot}.\`);` - Contributes to the local implementation details in this scope.
+- L219: `return;` - Contributes to the local implementation details in this scope.
+- L220: `}` - Contributes to the local implementation details in this scope.
+- L222: `const unchanged =` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L223: `state.lastSessionPath === latest.path &&` - Contributes to the local implementation details in this scope.
+- L224: `state.lastMtimeMs === latest.mtimeMs &&` - Contributes to the local implementation details in this scope.
+- L225: `state.lastSize === latest.size;` - Contributes to the local implementation details in this scope.
+- L227: `state.staleChecks = unchanged ? state.staleChecks + 1 : 0;` - Contributes to the local implementation details in this scope.
+- L228: `state.lastSessionPath = latest.path;` - Contributes to the local implementation details in this scope.
+- L229: `state.lastMtimeMs = latest.mtimeMs;` - Contributes to the local implementation details in this scope.
+- L230: `state.lastSize = latest.size;` - Contributes to the local implementation details in this scope.
+- L232: `const ageMs = Date.now() - latest.mtimeMs;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L233: `const stuck = ageMs >= STUCK_AFTER_MS && state.staleChecks >= MIN_STALE_CHECKS;` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L235: `if (!stuck) {` - Branches control flow so different code paths run under different conditions.
+- L236: `await writeState(state);` - Contributes to the local implementation details in this scope.
+- L237: `await log(` - Contributes to the local implementation details in this scope.
+- L238: `\`Healthy: latest session mtime=${new Date(latest.mtimeMs).toISOString()}, staleChecks=${state.staleChecks}, ageMs=${ageMs}.\`,` - Contributes to the local implementation details in this scope.
+- L239: `);` - Contributes to the local implementation details in this scope.
+- L240: `return;` - Contributes to the local implementation details in this scope.
+- L241: `}` - Contributes to the local implementation details in this scope.
+- L243: `if (Date.now() - (state.lastRestartAt ?? 0) < RESTART_COOLDOWN_MS) {` - Branches control flow so different code paths run under different conditions.
+- L244: `await writeState(state);` - Contributes to the local implementation details in this scope.
+- L245: `await log("Stuck detected but restart cooldown is active. Skipping restart.");` - Contributes to the local implementation details in this scope.
+- L246: `return;` - Contributes to the local implementation details in this scope.
+- L247: `}` - Contributes to the local implementation details in this scope.
+- L249: `const promptText = await createRestartPrompt(latest.path, latest.mtimeMs);` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L250: `await triggerRestart(promptText);` - Contributes to the local implementation details in this scope.
+- L251: `state.lastRestartAt = Date.now();` - Contributes to the local implementation details in this scope.
+- L252: `state.staleChecks = 0;` - Contributes to the local implementation details in this scope.
+- L254: `await writeState(state);` - Contributes to the local implementation details in this scope.
+- L255: `}` - Contributes to the local implementation details in this scope.
+- L257: `async function main() {` - Defines a function entrypoint that encapsulates one unit of behavior.
+- L258: `const once = process.argv.includes("--once");` - Declares a constant used to hold configuration, state, or helper logic in this scope.
+- L260: `await checkOnce();` - Contributes to the local implementation details in this scope.
+- L262: `if (once) {` - Branches control flow so different code paths run under different conditions.
+- L263: `return;` - Contributes to the local implementation details in this scope.
+- L264: `}` - Contributes to the local implementation details in this scope.
+- L266: `await log(` - Contributes to the local implementation details in this scope.
+- L267: `\`Watchdog started. intervalMs=${CHECK_INTERVAL_MS}, stuckAfterMs=${STUCK_AFTER_MS}, autoRestart=${AUTO_RESTART}.\`,` - Contributes to the local implementation details in this scope.
+- L268: `);` - Contributes to the local implementation details in this scope.
+- L270: `setInterval(() => {` - Registers runtime side effects/events that must be cleaned up or coordinated.
+- L271: `checkOnce().catch(async (error) => {` - Contributes to the local implementation details in this scope.
+- L272: `await log(\`Error during check: ${error instanceof Error ? error.message : String(error)}\`);` - Contributes to the local implementation details in this scope.
+- L273: `});` - Contributes to the local implementation details in this scope.
+- L274: `}, CHECK_INTERVAL_MS);` - Contributes to the local implementation details in this scope.
+- L275: `}` - Contributes to the local implementation details in this scope.
+- L277: `main().catch(async (error) => {` - Contributes to the local implementation details in this scope.
+- L278: `await ensureDir();` - Contributes to the local implementation details in this scope.
+- L279: `await log(\`Fatal error: ${error instanceof Error ? error.stack ?? error.message : String(error)}\`);` - Contributes to the local implementation details in this scope.
+- L280: `process.exit(1);` - Contributes to the local implementation details in this scope.
+- L281: `});` - Contributes to the local implementation details in this scope.
+
+### State management
+- L270: `setInterval(() => {` affects state ownership or updates.
+
+### Scope and closures
+- L9: Module/function-scoped constant provides stable reference.
+- L10: Module/function-scoped constant provides stable reference.
+- L11: Module/function-scoped constant provides stable reference.
+- L12: Module/function-scoped constant provides stable reference.
+- L13: Module/function-scoped constant provides stable reference.
+- L14: Module/function-scoped constant provides stable reference.
+- L16: Module/function-scoped constant provides stable reference.
+- L17: Module/function-scoped constant provides stable reference.
+
+### Control flow
+- L40: Protected block for expected fallible operations.
+- L59: Conditional branch chooses behavior based on runtime input.
+- L66: Loop processes repeated data/work.
+- L68: Conditional branch chooses behavior based on runtime input.
+- L73: Protected block for expected fallible operations.
+- L79: Loop processes repeated data/work.
+- L82: Conditional branch chooses behavior based on runtime input.
+- L87: Conditional branch chooses behavior based on runtime input.
+- L92: Protected block for expected fallible operations.
+- L98: Conditional branch chooses behavior based on runtime input.
+
+### Side effects
+- L35: Process or filesystem side effect.
+- L55: Process or filesystem side effect.
+- L182: Process or filesystem side effect.
+- L198: Process or filesystem side effect.
+- L270: Timer/event listener side effect.
+
+### TypeScript types and contracts
+Type usage is light here; contracts are mostly inferred from function signatures and library types.
+
+## Concepts taught by this file
+- side effects and lifecycle
+- TypeScript type contracts
+- async/await control flow
+
+## Common mistakes
+- Changing this file without updating dependent modules.
+- Ignoring edge-case error paths.
+- Skipping tests/docs for behavior changes.
+
+## Mini exercises
+- Rename one variable to improve clarity, then explain why readability improved.
+- Add one guard for invalid input and document expected behavior.
+- Trace one value from input to output in this file and write the path as comments.
+
+## Further reading
+- side effects and lifecycle: search for "React useEffect cleanup patterns"
+- TypeScript type contracts: search for "TypeScript interfaces vs types"
+- async/await control flow: search for "JavaScript async await error handling"
