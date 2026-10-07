@@ -79,3 +79,7 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## About this snapshot
+
+This repository is a snapshot of [elirc/jstrain2](https://github.com/elirc/jstrain2), taken before that repo added its `astraupskill/` course, two `tests/` files, and a transaction around `PUT /api/workflows/[id]`. Every other file matches. The glossary correction from its 2026-10 doc pass was ported here; the route guide instead notes the missing transaction, which this snapshot still has. Checked on 2026-10-06.

@@ -1,5 +1,7 @@
 # Guide: src/app/api/workflows/[id]/route.ts
 
+> **Known gap in PUT (checked against this snapshot on 2026-10-06).** The walkthrough below matches the code here line for line. Note that PUT writes in three separate statements on `db`: the parent `update` (lines 37-49), the step `delete` (line 56) and the step `insert` (lines 58-72). They are not wrapped in `db.transaction`. If the insert fails (for example, a step that breaks a constraint), the workflow keeps its bumped `version` and has lost all of its old steps, and the client gets an error. The maintained repo, [elirc/jstrain2](https://github.com/elirc/jstrain2), later moved all three writes onto `tx` inside `db.transaction`.
+
 ## Purpose
 This file defines a server API route. It handles HTTP requests, validates and transforms input, coordinates database/service calls, and returns a standardized response envelope.
 
@@ -148,10 +150,22 @@ Type usage is light here; contracts are mostly inferred from function signatures
 - Returning raw errors instead of normalized `{ success, error }` envelopes.
 - Not validating request bodies, causing runtime failures deeper in the stack.
 
+## Senior review notes (checked against this snapshot)
+- **Partial writes in PUT.** `db` is a `node-postgres` pool (`src/lib/db/index.ts:8-13`), so each `await db...` on lines 37, 56 and 58 can run on a different pooled connection and commits on its own. Nothing under `src/` calls `db.transaction(...)` today. Wrapping the three writes in `await db.transaction(async (tx) => { ... })` and using `tx` instead of `db` inside makes them all-or-nothing.
+- **"Not found" is a 200.** GET (line 18) and PUT (line 52) return `ok(null)` when the id does not exist or belongs to another tenant. The client cannot tell "missing" from "empty" by status code. That hides cross-tenant probing (good) but also hides typos in ids (bad); a 404 envelope would keep both properties.
+- **No optimistic concurrency.** PUT bumps `version` with `sql\`${workflows.version} + 1\`` (line 46) but never compares it to a version the client sent, so two editors saving at once both succeed and the last write wins.
+- **Malformed bodies become 500s.** `workflowUpdateSchema.parse(await request.json())` (line 35) throws `SyntaxError` or `ZodError`, and `fromError` (`src/lib/utils/api.ts:25-33`) maps anything that is not a `FlowPilotError` to `500 INTERNAL_ERROR`.
+- **DELETE is a soft delete.** Lines 86-90 only set `isActive: false`; the row and its steps remain, and GET still returns them.
+
 ## Mini exercises
-- Add one new validation rule to the request body and return a clear error code when it fails.
-- Add cursor/limit support (or tighten it) and explain how it prevents heavy responses.
-- Write a unit test that proves one unhappy path is handled correctly.
+- **Goal:** make PUT all-or-nothing. Move the update, delete and insert into one `db.transaction` callback that uses `tx`.
+  **Check:** `grep -n "db.transaction" "src/app/api/workflows/[id]/route.ts"` prints one line, and `grep -n "await db\.\(update\|delete\|insert\)" "src/app/api/workflows/[id]/route.ts"` prints nothing (before the change it prints lines 56 and 58).
+- **Goal:** return 404 for a missing workflow. Replace the two `ok(null)` returns (lines 18 and 52) with a failure envelope.
+  **Check:** with the dev server running, `GET /api/workflows/00000000-0000-0000-0000-000000000000` responds with status 404 and `success: false` instead of `200` with `data: null`.
+- **Goal:** turn a malformed JSON body into a 400. Catch `SyntaxError` and `ZodError` before falling through to `fromError`.
+  **Check:** sending `PUT` with body `{` returns status 400 with a validation error code, not `500 INTERNAL_ERROR`.
+- **Goal:** detect lost updates. Add an expected `version` to `workflowUpdateSchema` (`src/lib/validators/workflow.schema.ts`), then add `eq(workflows.version, payload.version)` to the `where` on line 48.
+  **Check:** two `PUT`s carrying the same old version: the first returns the updated row, the second returns your conflict response and the stored `version` went up by exactly one.
 
 ## Further reading
 - api route handler: search for "Next.js Route Handlers tutorial"

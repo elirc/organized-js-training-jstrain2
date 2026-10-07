@@ -318,7 +318,7 @@ Project example (`src/app/api/workflows/route.ts`):
 ```ts
 try { /* route logic */ } catch (error: unknown) { return fromError(error); }
 ```
-Extra mini-example: wrap JSON parsing in try/catch to return 400 instead of crashing.
+Extra mini-example: wrap JSON parsing in try/catch so a bad body does not crash the handler. Note that in this codebase `fromError` (`src/lib/utils/api.ts:25-33`) returns 400 only for `FlowPilotError`. A `SyntaxError` from `request.json()` or a `ZodError` from `.parse()` comes back as `500 INTERNAL_ERROR`. To get a 400 you must map those errors yourself.
 
 ## Side Effect
 An operation that changes external state (network, DB, file, timer).
